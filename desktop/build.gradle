@@ -1,0 +1,11 @@
+plugins {
+    id 'application'
+}
+dependencies {
+    implementation project(':core')
+    implementation libs.jme.desktop
+    implementation libs.jme.lwjgl3
+}
+application {
+    mainClass = 'com.testjem.DesktopLauncher'
+}
