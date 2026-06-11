@@ -5,6 +5,12 @@ import com.jme3.animation.AnimChannel;
 import com.jme3.animation.AnimControl;
 import com.jme3.animation.LoopMode;
 import com.jme3.app.SimpleApplication;
+import com.jme3.input.event.JoyAxisEvent;
+import com.jme3.input.event.JoyButtonEvent;
+import com.jme3.input.event.KeyInputEvent;
+import com.jme3.input.event.MouseButtonEvent;
+import com.jme3.input.event.MouseMotionEvent;
+import com.jme3.input.event.TouchEvent;
 import com.jme3.light.AmbientLight;
 import com.jme3.light.DirectionalLight;
 import com.jme3.material.Material;
@@ -19,24 +25,31 @@ import com.jme3.scene.Spatial;
 import com.jme3.shadow.DirectionalLightShadowRenderer;
 import com.jme3.shadow.EdgeFilteringMode;
 
-import jme3tools.optimize.GeometryBatchFactory;
-
 public class MainGame extends SimpleApplication {
 
     private AnimControl animControl;
     private AnimChannel animChannel;
 
+    private Node ualModel;                         // модель персонажа
+    private float cameraDistance = 5f;             // расстояние от персонажа
+    private float cameraYaw = 0f;                  // угол поворота (0 – спереди)
+    private float cameraPitch = 0f;                // наклон
+    private float lookAtOffsetY = 2f;              // смещение точки взгляда вверх
+
+    // Переменные для плавного перемещения
+    private Vector3f targetPosition;               // целевая позиция персонажа
+    private float moveSpeed = 6f;                  // скорость перемещения (единиц в секунду)
+
     @Override
     public void simpleInitApp() {
         viewPort.setBackgroundColor(new ColorRGBA(0.5f, 0.8f, 1f, 1f));
 
-        // 1. Настраиваем освещение и тени
         setupLightAndShadows();
+        createRoad();
 
-        // 2. Загружаем модель
-        Node ualModel = (Node) assetManager.loadModel("Models/UAL/UAL1_Standard.glb");
+        ualModel = (Node) assetManager.loadModel("Models/UAL/UAL1_Standard.glb");
 
-        // 3. Заменяем материал на Lighting (реагирует на свет)
+        // Настройка материала и поворота
         ualModel.depthFirstTraversal(new SceneGraphVisitorAdapter() {
             @Override
             public void visit(Geometry geometry) {
@@ -45,50 +58,66 @@ public class MainGame extends SimpleApplication {
                 mat.setColor("Diffuse", ColorRGBA.Yellow);
                 mat.setColor("Ambient", ColorRGBA.Red);
                 mat.setColor("Specular", ColorRGBA.Red);
-
                 geometry.setMaterial(mat);
             }
         });
-
-
         ualModel.rotate(0, FastMath.PI, 0);
-
         rootNode.attachChild(ualModel);
 
+        // Инициализация целевой позиции
+        targetPosition = ualModel.getLocalTranslation().clone();
+
         flyCam.setEnabled(false);
+        updateCameraPosition();
 
-        Vector3f modelPos = ualModel.getLocalTranslation();
-        // Задаём углы камеры в сферических координатах
-        float distance = 5f;      // расстояние от модели
-        float yaw = 0;  // угол поворота вокруг Y (PI = 180° – сзади, 0 – спереди)
-        float pitch = 0.f;       // угол наклона вверх-вниз (радианы: 0 – горизонтально, положительные значения – сверху)
+        // Слушатель свайпов
+        inputManager.addRawInputListener(new com.jme3.input.RawInputListener() {
+            private float startX = 0;
+            private boolean touching = false;
+            private final float SWIPE_THRESHOLD = 100f;
 
-        // Вычисляем позицию камеры
-        float x = modelPos.x + distance * (float)(Math.sin(yaw) * Math.cos(pitch));
-        float y = modelPos.y + distance + 5 * (float)(Math.sin(pitch));
-        float z = modelPos.z + distance * (float)(Math.cos(yaw) * Math.cos(pitch));
+            @Override
+            public void onTouchEvent(TouchEvent event) {
+                if (event.getType() == TouchEvent.Type.DOWN) {
+                    startX = event.getX();
+                    touching = true;
+                } else if (event.getType() == TouchEvent.Type.UP && touching) {
+                    float deltaX = event.getX() - startX;
+                    if (Math.abs(deltaX) > SWIPE_THRESHOLD) {
+                        float moveDistance = 2f;   // шаг вправо/влево
+                        float currentX = ualModel.getLocalTranslation().x;
+                        float newX = currentX + (deltaX > 0 ? moveDistance : -moveDistance);
+                        newX = FastMath.clamp(newX, -2f, 2f);
+                        targetPosition.setX(newX);
+                    }
+                    touching = false;
+                }
+            }
+            @Override public void beginInput() {}
+            @Override public void endInput() {}
+            @Override public void onMouseMotionEvent(MouseMotionEvent evt) {}
+            @Override public void onMouseButtonEvent(MouseButtonEvent evt) {}
+            @Override public void onKeyEvent(KeyInputEvent evt) {}
+            @Override public void onJoyAxisEvent(JoyAxisEvent evt) {}
+            @Override public void onJoyButtonEvent(JoyButtonEvent evt) {}
+        });
 
-        cam.setLocation(new Vector3f(x, y, z));
-
-        cam.lookAt(modelPos, Vector3f.UNIT_Y);
-
-        // 4. Разрешаем объектам отбрасывать и принимать тени
         rootNode.setShadowMode(RenderQueue.ShadowMode.CastAndReceive);
         ualModel.setShadowMode(RenderQueue.ShadowMode.CastAndReceive);
 
-        // 5. Анимация через AnimComposer (современный API)
+        // Анимация через AnimComposer
         AnimComposer animComposer = findAnimComposer(ualModel);
         if (animComposer != null) {
             animComposer.setCurrentAction("Sprint_Loop");
         } else {
-            System.err.println("AnimComposer не найден! Проверьте модель.");
+            System.err.println("AnimComposer не найден!");
         }
 
-        // 6. Устаревший AnimControl (для информации)
+        // Устаревший AnimControl (для информации)
         animControl = ualModel.getControl(AnimControl.class);
         if (animControl != null) {
             animChannel = animControl.createChannel();
-            System.out.println("--- Доступные анимации (устаревший API) ---");
+            System.out.println("--- Доступные анимации ---");
             for (String animName : animControl.getAnimationNames()) {
                 System.out.println(animName);
             }
@@ -98,7 +127,27 @@ public class MainGame extends SimpleApplication {
                 animChannel.setLoopMode(LoopMode.Loop);
             }
         } else {
-            System.err.println("AnimControl не найден! Проверьте модель.");
+            System.err.println("AnimControl не найден!");
+        }
+    }
+
+    @Override
+    public void simpleUpdate(float tpf) {
+        Vector3f currentPos = ualModel.getLocalTranslation();
+        if (!currentPos.equals(targetPosition)) {
+            // Вычисляем направление к цели
+            Vector3f direction = targetPosition.subtract(currentPos).normalizeLocal();
+            // Смещение за кадр
+            float step = moveSpeed * tpf;
+            Vector3f newPos = currentPos.add(direction.mult(step));
+
+            // Если перескочили цель — ставим точно в цель
+            if (newPos.x * direction.x > targetPosition.x * direction.x && direction.x != 0) {
+                ualModel.setLocalTranslation(targetPosition);
+            } else {
+                ualModel.setLocalTranslation(newPos);
+            }
+            updateCameraPosition();
         }
     }
 
@@ -108,12 +157,10 @@ public class MainGame extends SimpleApplication {
         sun.setDirection(new Vector3f(-0.5f, -1f, -0.5f).normalizeLocal());
         rootNode.addLight(sun);
 
-        // Фоновый свет (чтобы тени не были слишком чёрными)
         AmbientLight ambient = new AmbientLight();
         ambient.setColor(ColorRGBA.Gray);
         rootNode.addLight(ambient);
 
-        // Тени
         DirectionalLightShadowRenderer dlsr = new DirectionalLightShadowRenderer(assetManager, 1024, 3);
         dlsr.setLight(sun);
         dlsr.setEdgeFilteringMode(EdgeFilteringMode.PCF4);
@@ -122,18 +169,40 @@ public class MainGame extends SimpleApplication {
 
     public AnimComposer findAnimComposer(Spatial spatial) {
         AnimComposer composer = spatial.getControl(AnimComposer.class);
-        if (composer != null) {
-            return composer;
-        }
+        if (composer != null) return composer;
         if (spatial instanceof Node) {
-            Node node = (Node) spatial;
-            for (Spatial child : node.getChildren()) {
+            for (Spatial child : ((Node) spatial).getChildren()) {
                 composer = findAnimComposer(child);
-                if (composer != null) {
-                    return composer;
-                }
+                if (composer != null) return composer;
             }
         }
         return null;
+    }
+
+    private void createRoad() {
+        float roadWidth = 4f;
+        float roadLength = 30f;
+        float roadHeight = 0.1f;
+
+        Geometry road = new Geometry("Road", new com.jme3.scene.shape.Box(roadWidth, roadHeight, roadLength));
+        Material roadMat = new Material(assetManager, "Common/MatDefs/Light/Lighting.j3md");
+        roadMat.setBoolean("UseMaterialColors", true);
+        roadMat.setColor("Diffuse", new ColorRGBA(0.0f, 0.4f, 0.0f, 1.0f));
+        roadMat.setColor("Ambient", ColorRGBA.Gray);
+        roadMat.setColor("Specular", ColorRGBA.Black);
+        road.setMaterial(roadMat);
+        road.setLocalTranslation(0, -roadHeight - 0.05f, 0);
+        road.setShadowMode(RenderQueue.ShadowMode.Receive);
+        rootNode.attachChild(road);
+    }
+
+    private void updateCameraPosition() {
+        Vector3f modelPos = ualModel.getLocalTranslation();
+        float x = modelPos.x + cameraDistance * (float)(Math.sin(cameraYaw) * Math.cos(cameraPitch));
+        float y = modelPos.y + cameraDistance + 5 * (float)(Math.sin(cameraPitch));
+        float z = modelPos.z + cameraDistance * (float)(Math.cos(cameraYaw) * Math.cos(cameraPitch));
+        cam.setLocation(new Vector3f(x, y, z));
+        Vector3f lookAtPoint = modelPos.add(0, lookAtOffsetY, 0);
+        cam.lookAt(lookAtPoint, Vector3f.UNIT_Y);
     }
 }
